@@ -3,7 +3,7 @@
 
 const GATEWAY_URL = "https://connector-gateway.lovable.dev/whatsapp";
 
-function keys() {
+export function keys() {
   const lovable = process.env["LOVABLE_API_KEY"];
   const connection = process.env["WHATSAPP_API_KEY"];
   if (!lovable || !connection) {
@@ -21,16 +21,21 @@ export function normalizePhone(input: string): string {
   return input.replace(/[^\d]/g, "");
 }
 
-async function gatewayFetch(path: string, init: RequestInit = {}) {
+export async function gatewayFetch(path: string, init: RequestInit = {}) {
   const { lovable, connection } = keys();
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${lovable}`,
+    "X-Connection-Api-Key": connection,
+  };
+  if (!(init.body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+  }
+  if (init.headers) {
+    Object.assign(headers, init.headers);
+  }
   return fetch(`${GATEWAY_URL}${path}`, {
     ...init,
-    headers: {
-      Authorization: `Bearer ${lovable}`,
-      "X-Connection-Api-Key": connection,
-      "Content-Type": "application/json",
-      ...(init.headers ?? {}),
-    },
+    headers,
   });
 }
 
@@ -43,9 +48,35 @@ export async function sendWhatsAppText(
     method: "POST",
     body: JSON.stringify({
       messaging_product: "whatsapp",
+      recipient_type: "individual",
       to: normalizePhone(to),
       type: "text",
       text: { body: body.slice(0, 4000) },
+    }),
+  });
+  const text = await res.text();
+  if (!res.ok) return { ok: false, error: `${res.status}: ${text.slice(0, 400)}` };
+  try {
+    const json = JSON.parse(text) as { messages?: { id?: string }[] };
+    return { ok: true, id: json.messages?.[0]?.id ?? null };
+  } catch {
+    return { ok: true, id: null };
+  }
+}
+
+/** Sends an audio voice note message via media id or public link. */
+export async function sendWhatsAppAudio(
+  to: string,
+  audio: { id?: string; link?: string },
+): Promise<{ ok: true; id: string | null } | { ok: false; error: string }> {
+  const res = await gatewayFetch("/messages", {
+    method: "POST",
+    body: JSON.stringify({
+      messaging_product: "whatsapp",
+      recipient_type: "individual",
+      to: normalizePhone(to),
+      type: "audio",
+      audio,
     }),
   });
   const text = await res.text();

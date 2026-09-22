@@ -1,6 +1,6 @@
 {
   "name": "Kero AI Chat",
-  "description": "Multilingual AI assistant for Egreed Technology with NVIDIA NIM API integration, voice conversations via Gemini Live, audio transcription, and real-time streaming chat.",
+  "description": "Multilingual AI assistant for Egreed Technology with WhatsApp voice note conversation support, NVIDIA NIM API integration, voice conversations via Gemini Live, and audio transcription.",
   "requestFramePermissions": ["microphone"],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

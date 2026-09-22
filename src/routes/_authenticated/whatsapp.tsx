@@ -2,7 +2,7 @@ import { useState } from "react";
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useServerFn } from "@tanstack/react-start";
-import { ArrowLeft, Check, Phone, Trash2 } from "lucide-react";
+import { ArrowLeft, Check, Mic, Phone, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import { KeroMark } from "@/components/kero/KeroMark";
@@ -104,10 +104,15 @@ function WhatsAppPage() {
         </Button>
         <KeroMark className="size-9" />
         <div>
-          <h1 className="font-display text-xl font-semibold">Kero on WhatsApp</h1>
-          <p className="text-sm text-muted-foreground">
-            Add your number and Kero answers your WhatsApp messages on +250 794 433 166, the
-            official Egreed Technology support line — even while you sleep.
+          <div className="flex items-center gap-2">
+            <h1 className="font-display text-xl font-semibold">Kero on WhatsApp</h1>
+            <span className="inline-flex items-center gap-1 rounded-full border border-primary/20 bg-primary/10 px-2 py-0.5 text-xs font-medium text-primary">
+              <Mic className="size-3" /> Voice Notes Active
+            </span>
+          </div>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Add your number and Kero answers your WhatsApp messages and voice notes on +250 794 433
+            166, the official Egreed Technology support line.
           </p>
         </div>
       </div>
@@ -205,21 +210,33 @@ function WhatsAppPage() {
               </button>
               {openThread === thread.id && (
                 <div className="space-y-2 border-t border-border px-4 py-3">
-                  {(messages.data ?? []).map((message) => (
-                    <div
-                      key={message.id}
-                      className={
-                        message.direction === "inbound"
-                          ? "text-sm"
-                          : "text-sm text-muted-foreground"
-                      }
-                    >
-                      <span className="font-medium">
-                        {message.direction === "inbound" ? "Them: " : "Kero: "}
-                      </span>
-                      {message.content}
-                    </div>
-                  ))}
+                  {(messages.data ?? []).map((message) => {
+                    const isVoice = message.content.startsWith("🎤");
+                    return (
+                      <div
+                        key={message.id}
+                        className={
+                          message.direction === "inbound"
+                            ? "text-sm"
+                            : "text-sm text-muted-foreground"
+                        }
+                      >
+                        <span className="font-medium">
+                          {message.direction === "inbound" ? "Them: " : "Kero: "}
+                        </span>
+                        {isVoice ? (
+                          <span className="inline-flex flex-wrap items-center gap-1.5">
+                            <span className="inline-flex items-center gap-1 rounded bg-primary/10 px-1.5 py-0.5 text-[11px] font-medium text-primary">
+                              <Mic className="size-3" /> Voice note
+                            </span>
+                            <span>{message.content.replace(/^🎤\s*/, "")}</span>
+                          </span>
+                        ) : (
+                          message.content
+                        )}
+                      </div>
+                    );
+                  })}
                   {messages.data?.length === 0 && (
                     <p className="text-sm text-muted-foreground">No messages yet.</p>
                   )}

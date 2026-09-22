@@ -80,8 +80,10 @@ export const Route = createFileRoute("/api/public/whatsapp/webhook")({
           }
         }
 
+        const serverOrigin = new URL(request.url).origin;
         try {
-          if (event === "whatsapp.message") await handleInbound(supabaseAdmin, waValue(payload));
+          if (event === "whatsapp.message")
+            await handleInbound(supabaseAdmin, waValue(payload), serverOrigin);
           else if (event === "whatsapp.status") await handleStatus(supabaseAdmin, waValue(payload));
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -138,15 +140,23 @@ const REPLY_DELAY_MS = 2000;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function handleInbound(admin: Admin, value: WaValue) {
+async function handleInbound(admin: Admin, value: WaValue, serverOrigin: string) {
   const { sendWhatsAppText } = await import("@/lib/whatsapp/gateway.server");
   const { generateWhatsAppReply } = await import("@/lib/whatsapp/reply.server");
+  const {
+    downloadWhatsAppAudio,
+    transcribeWhatsAppAudio,
+    synthesizeVoiceNote,
+    sendWhatsAppVoiceNote,
+  } = await import("@/lib/whatsapp/media.server");
   const contactName = value.contacts?.[0]?.profile?.name ?? null;
 
   for (const message of value.messages ?? []) {
     const from = message.from;
     const waId = message.id;
-    const text = message.text?.body?.trim() ?? "";
+    let text = message.text?.body?.trim() ?? "";
+    const isVoice = message.type === "audio" || Boolean(message.audio);
+    const audioMeta = message.audio;
     if (!from || !waId) continue;
 
     // Already handled (gateway retry or duplicate)?
@@ -156,6 +166,23 @@ async function handleInbound(admin: Admin, value: WaValue) {
       .eq("wa_message_id", waId)
       .maybeSingle();
     if (seen) continue;
+
+    // If inbound is a voice note, transcribe it
+    if (isVoice && audioMeta) {
+      try {
+        console.info(`[whatsapp] downloading incoming voice note from ${from}...`);
+        const downloaded = await downloadWhatsAppAudio(audioMeta);
+        if (downloaded) {
+          const transcript = await transcribeWhatsAppAudio(downloaded.buffer, downloaded.mimeType);
+          if (transcript) {
+            text = transcript.trim();
+            console.info(`[whatsapp] Voice note transcribed from ${from}: "${text}"`);
+          }
+        }
+      } catch (voiceErr) {
+        console.error("[whatsapp] voice note download or transcription failed", voiceErr);
+      }
+    }
 
     const { data: number } = await admin
       .from("whatsapp_numbers")
@@ -189,11 +216,37 @@ async function handleInbound(admin: Admin, value: WaValue) {
     // Unknown sender writing to the official support line: still answer, but there is
     // no linked number to file the thread under, so reply without storing a thread.
     if (!number) {
-      if (!text) continue;
-      await sleep(REPLY_DELAY_MS);
+      if (!text) {
+        if (isVoice) {
+          await sendWhatsAppText(
+            from,
+            "Ntabwo numvise neza ubutumwa bwawe bw'amajwi. Nyamuneka ongera ubyoherereze cyangwa unyandikire.",
+          );
+        }
+        continue;
+      }
+      await sleep(isVoice ? 800 : REPLY_DELAY_MS);
       try {
         const reply = await generateWhatsAppReply([{ role: "user", content: text }]);
-        await sendWhatsAppText(from, reply);
+        if (isVoice) {
+          try {
+            const synth = await synthesizeVoiceNote(reply);
+            const voiceSent = await sendWhatsAppVoiceNote(
+              from,
+              synth.buffer,
+              synth.mimeType,
+              serverOrigin,
+            );
+            if (!voiceSent.ok) {
+              await sendWhatsAppText(from, reply);
+            }
+          } catch (vErr) {
+            console.warn("[whatsapp] guest voice note send failed, falling back to text", vErr);
+            await sendWhatsAppText(from, reply);
+          }
+        } else {
+          await sendWhatsAppText(from, reply);
+        }
       } catch (error) {
         console.error("[whatsapp] guest reply failed", error);
       }
@@ -230,7 +283,11 @@ async function handleInbound(admin: Admin, value: WaValue) {
         user_id: number.user_id,
         direction: "inbound",
         wa_message_id: waId,
-        content: text || `[${message.type ?? "unsupported"} message]`,
+        content: isVoice
+          ? text
+            ? `🎤 ${text}`
+            : "[Voice note - no speech detected]"
+          : text || `[${message.type ?? "unsupported"} message]`,
         status: "received",
         provider_timestamp: message.timestamp
           ? new Date(Number(message.timestamp) * 1000).toISOString()
@@ -248,7 +305,6 @@ async function handleInbound(admin: Admin, value: WaValue) {
     if (!number.auto_reply) continue;
     if (!text) {
       const { detectConversationSignals } = await import("@/lib/ai/kinyarwanda/retrieval.server");
-      const isVoice = message.type === "audio" || Boolean(message.audio);
       const isKinyarwanda = detectConversationSignals([
         { role: "user", content: message.type ?? "" },
       ]).kinyarwanda;
@@ -256,17 +312,17 @@ async function handleInbound(admin: Admin, value: WaValue) {
         from,
         isVoice
           ? isKinyarwanda
-            ? "Urakoze! Kuri ubu ubutumwa bwa amajwi (audio note) buraboneka muri Kero Web App ikoresheje Gemini Live. Kuri WhatsApp nyamuneka nyandikira ubutumwa bwanditse, ndagusubiza ako kanya!"
-            : "Thank you! Voice notes and live audio are available directly in the Kero Web App using Gemini Live. On WhatsApp, please type your message as text and I will gladly reply!"
+            ? "Ntabwo numvise neza ijwi ryawe. Nyamuneka ongera unyoherereze ubutumwa bw'amajwi busobanutse cyangwa unyandikire."
+            : "I couldn't hear your voice note clearly. Please try sending it again or type your message."
           : isKinyarwanda
-            ? "Ubu nakira gusa ubutumwa bwanditse kuri WhatsApp."
-            : "I can only read text messages for now.",
+            ? "Ubu nakira gusa ubutumwa bwanditse cyangwa ubutumwa bwa amajwi (voice notes) kuri WhatsApp."
+            : "I can read text messages and listen to voice notes on WhatsApp.",
       );
       continue;
     }
 
     // Wait a moment: if they keep typing, the newer message answers for both.
-    await sleep(REPLY_DELAY_MS);
+    await sleep(isVoice ? 800 : REPLY_DELAY_MS);
     const { data: newer } = await admin
       .from("whatsapp_messages")
       .select("id")
@@ -285,7 +341,7 @@ async function handleInbound(admin: Admin, value: WaValue) {
 
     const turns = (history ?? []).reverse().map((row) => ({
       role: row.direction === "inbound" ? ("user" as const) : ("assistant" as const),
-      content: row.content,
+      content: row.content.replace(/^🎤\s*/, ""),
     }));
 
     let reply: string;
@@ -300,15 +356,54 @@ async function handleInbound(admin: Admin, value: WaValue) {
         : "Sorry, I couldn't get to that just now. Please send your message again in a moment.";
     }
 
-    const sent = await sendWhatsAppText(from, reply);
+    let sentOk = false;
+    let outboundWaId: string | null = null;
+    let outboundError: string | null = null;
+
+    if (isVoice) {
+      try {
+        console.info(`[whatsapp] synthesizing voice note reply for ${from}...`);
+        const synth = await synthesizeVoiceNote(reply);
+        const voiceSent = await sendWhatsAppVoiceNote(
+          from,
+          synth.buffer,
+          synth.mimeType,
+          serverOrigin,
+        );
+        if (voiceSent.ok) {
+          sentOk = true;
+          outboundWaId = voiceSent.id;
+          // Also optionally send text transcript for convenience
+          await sendWhatsAppText(from, reply).catch(() => {});
+        } else {
+          console.warn("[whatsapp] voice note send failed, falling back to text", voiceSent.error);
+          const textSent = await sendWhatsAppText(from, reply);
+          sentOk = textSent.ok;
+          outboundWaId = textSent.ok ? textSent.id : null;
+          outboundError = textSent.ok ? null : textSent.error.slice(0, 500);
+        }
+      } catch (synthErr) {
+        console.warn("[whatsapp] voice note synthesis failed, sending text fallback", synthErr);
+        const textSent = await sendWhatsAppText(from, reply);
+        sentOk = textSent.ok;
+        outboundWaId = textSent.ok ? textSent.id : null;
+        outboundError = textSent.ok ? null : textSent.error.slice(0, 500);
+      }
+    } else {
+      const textSent = await sendWhatsAppText(from, reply);
+      sentOk = textSent.ok;
+      outboundWaId = textSent.ok ? textSent.id : null;
+      outboundError = textSent.ok ? null : textSent.error.slice(0, 500);
+    }
+
     await admin.from("whatsapp_messages").insert({
       conversation_id: thread!.id,
       user_id: number.user_id,
       direction: "outbound",
-      wa_message_id: sent.ok ? sent.id : null,
-      content: reply,
-      status: sent.ok ? "accepted" : "failed",
-      error: sent.ok ? null : sent.error.slice(0, 500),
+      wa_message_id: outboundWaId,
+      content: isVoice ? `🎤 ${reply}` : reply,
+      status: sentOk ? "accepted" : "failed",
+      error: outboundError,
     });
 
     await admin
