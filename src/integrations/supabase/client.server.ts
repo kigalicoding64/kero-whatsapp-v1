@@ -46,8 +46,12 @@ function createSupabaseAdminClient() {
     );
   }
 
-  const effectiveUrl = SUPABASE_URL || "https://zkezfdabqtnnydqigwro.supabase.co";
-  const effectiveKey = SUPABASE_SERVICE_ROLE_KEY || "placeholder-service-role-key";
+  const effectiveUrl =
+    SUPABASE_URL || "https://c--3936d5d2-8a0e-40cc-9e0f-2e857774d4d4-prod.lovable.cloud";
+  const effectiveKey =
+    SUPABASE_SERVICE_ROLE_KEY ||
+    process.env["SUPABASE_PUBLISHABLE_KEY"] ||
+    "sb_publishable_Jvc9-TGawUvZPceQfVRe7Q_FmnVc7oB";
 
   return createClient<Database>(effectiveUrl, effectiveKey, {
     global: {

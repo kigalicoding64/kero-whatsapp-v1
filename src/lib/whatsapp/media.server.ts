@@ -11,6 +11,7 @@ import {
   markModelCooldown,
 } from "@/lib/ai/gemini.server";
 import { gatewayFetch, keys, sendWhatsAppAudio } from "@/lib/whatsapp/gateway.server";
+import { isFishAudioConfigured, synthesizeFishAudio } from "@/lib/ai/tts/fish-audio.server";
 
 export interface MediaEntry {
   buffer: Buffer;
@@ -303,16 +304,46 @@ export async function transcribeWhatsAppAudio(buffer: Buffer, mimeType: string):
   return "";
 }
 
-/** Synthesize speech from text using Gemini TTS and encode to native WhatsApp OGG Opus. */
+/** Synthesize speech from text using Fish Audio or Gemini TTS and encode to native WhatsApp OGG Opus. */
 export async function synthesizeVoiceNote(
   text: string,
   voice: "Kore" | "Puck" | "Charon" | "Fenrir" | "Zephyr" = "Kore",
+  languageHint?: string,
 ): Promise<{ buffer: Buffer; mimeType: string }> {
+  // If Fish Audio is configured, try it for natural multilingual human voice
+  if (isFishAudioConfigured()) {
+    try {
+      console.info("[whatsapp-voice] synthesizing voice note with Fish Audio TTS...");
+      const fishResult = await synthesizeFishAudio({
+        text,
+        format: "opus",
+      });
+      if (fishResult.buffer && fishResult.buffer.length > 0) {
+        return fishResult;
+      }
+    } catch (fishErr) {
+      console.warn(
+        "[whatsapp-voice] Fish Audio synthesis failed, falling back to Gemini TTS",
+        fishErr,
+      );
+    }
+  }
+
   if (!isGeminiConfigured()) {
-    throw new Error("GEMINI_API_KEY is not configured for speech synthesis");
+    throw new Error(
+      "Neither FISH_AUDIO_API_KEY nor GEMINI_API_KEY is configured for speech synthesis",
+    );
   }
 
   const ai = getGeminiClient();
+
+  const promptPrefix = languageHint?.includes("kinyarwanda")
+    ? "Read the following message in fluent, natural Kinyarwanda with authentic Rwandan pronunciation and warm tone: "
+    : languageHint?.includes("french")
+      ? "Lisez le message suivant en français de manière fluide, chaleureuse et naturelle: "
+      : languageHint?.includes("swahili")
+        ? "Soma ujumbe ufuatao kwa Kiswahili fasaha, wazi na kwa utulivu: "
+        : "Read the following message clearly, warmly, and naturally, pronouncing African, Rwandan, and English names or words accurately: ";
 
   const response = await ai.models.generateContent({
     model: "gemini-3.1-flash-tts-preview",
@@ -320,7 +351,7 @@ export async function synthesizeVoiceNote(
       {
         parts: [
           {
-            text: `Read the following message clearly, warmly, and naturally, pronouncing African and Rwandan names or words correctly: ${text}`,
+            text: `${promptPrefix}${text}`,
           },
         ],
       },
